@@ -1,7 +1,8 @@
 import os
 import sys
 import requests
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -10,6 +11,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_KEY']
 POLYGON_API_KEY = os.environ['POLYGON_API_KEY']
+MARKET_TZ = ZoneInfo('America/New_York')
 
 
 def get_target_dates():
@@ -20,7 +22,7 @@ def get_target_dates():
     same-day data only becomes available starting the next calendar day.
     So we always target the most recently completed trading day.
     """
-    today = date.today()
+    today = datetime.now(MARKET_TZ).date()
     if today.weekday() == 5:    # Saturday — last close was Friday
         return [today - timedelta(days=1)]
     if today.weekday() == 6:    # Sunday — last close was Friday
