@@ -1,2 +1,11 @@
 .env
 .venv
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.playwright-mcp/
+.vscode/
+dbt/logs/
+dbt/target/
+*.bak
+.DS_Store
