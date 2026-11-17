@@ -1,74 +1,112 @@
-# Portfolio Analyzer
-
-A Portfolio Analyzer built on a modern data stack.
-
-Pulls daily stock prices, transforms the data with dbt, and renders a live
-portfolio dashboard directly from Supabase/Polygon/FRED. A Claude API analyzer
-answers questions against the same live data using tool use.
-
+# PortfolioOS
+ 
+**A personal investing platform built on a modern data stack: daily market data in, tested dbt models in the middle, a live dashboard and a Claude-powered analyst on top.**
+ 
+<!-- TODO: add a screenshot of the dashboard here, e.g. ![Dashboard](docs/dashboard.png) -->
+<!-- TODO: add the live Streamlit link here once you decide to share it -->
+ 
+I spent nine years in fund accounting, where cost basis, realized vs. unrealized P&L, and benchmark comparisons are daily work. PortfolioOS applies that domain knowledge to a full pipeline: ingest, transform, test, automate, and ask questions in plain English.
+ 
 ---
-
-## What It Does
-
-- Fetches daily prices for 560+ stocks from Polygon.io and loads them into Supabase
-- dbt staging and mart models clean and transform the raw data into portfolio metrics
-- Streamlit dashboard calls Supabase/Polygon/FRED directly to render live portfolio
-  positions, KPIs, sector exposure, market movers, news, and economic indicators
-- Claude API portfolio analyzer uses tool use to answer questions against live data,
-  with multi-turn conversation history
-- Add/Sell Position forms write directly to Supabase; new tickers are
-  auto-registered and backfilled with price history via Polygon
-- Realized P&L mart tracks per-sale gains using weighted average cost basis
-- GitHub Actions runs the price fetch and `dbt run` automatically every weekday
-  at 4:30 PM ET
-- A FastAPI layer exists with equivalent endpoints but is not currently used by
-  the dashboard
-
+ 
+## What it does
+ 
+- **Ingests** daily prices for 560+ tickers from Polygon.io into Supabase (PostgreSQL) with a single grouped API call
+- **Transforms** raw data with dbt: staging views plus six mart tables for positions, summary, sector exposure, benchmark comparison, market movers, and realized P&L
+- **Automates** the daily load and `dbt run` with GitHub Actions every weekday at 4:30 PM ET, plus a lightweight workflow that refreshes the marts within about 30 seconds of a trade
+- **Visualizes** everything in a Streamlit dashboard: portfolio KPIs, sector exposure, a sector treemap of market movers, news, and FRED economic indicators
+- **Answers questions** through a Claude API analyst that uses tool calls against the same live data, with multi-turn memory
+- **Records trades** through Add/Sell Position forms. New tickers are auto-registered and backfilled with a year of price history
 ---
-
+ 
+## Architecture
+ 
+```mermaid
+flowchart LR
+    P[Polygon.io<br/>daily prices] --> I[ingestion/<br/>price_fetcher.py]
+    I --> S[(Supabase<br/>PostgreSQL)]
+    S --> D[dbt<br/>staging + marts]
+    D --> S
+    S --> UI[Streamlit<br/>dashboard]
+    S --> AI[Claude analyst<br/>tool use]
+    F[FRED<br/>macro data] --> UI
+    F --> AI
+    N[Polygon news] --> UI
+    N --> AI
+    GA[GitHub Actions<br/>weekday cron] -. triggers .-> I
+    GA -. triggers .-> D
+    UI -- "Add / Sell forms" --> S
+```
+ 
 ## Stack
-
+ 
 | Layer | Tool |
 |-------|------|
-| Data source | Polygon.io, FRED |
+| Data sources | Polygon.io, FRED |
 | Database | Supabase (PostgreSQL) |
-| Transformation | dbt |
-| Dashboard | Streamlit |
+| Transformation | dbt (staging views, mart tables) |
+| Dashboard | Streamlit, Plotly |
 | AI layer | Claude API with tool use |
-| API (unused by dashboard) | FastAPI |
+| API layer | FastAPI (optional, not used by the dashboard) |
 | Automation | GitHub Actions |
-| Language | Python |
-
+| Language | Python 3.12 |
+ 
 ---
-
-## Project Structure
-
-| Folder | What it does |
-|--------|-------------|
-| `ingestion/` | Daily price fetcher and backfill script |
+ 
+## Design decisions worth knowing about
+ 
+**Prices come from the last completed trading day, never "today."** Polygon's free tier rejects same-day grouped data with a 403. I confirmed this with a direct request instead of trusting the docs, then changed the fetcher to always target the prior trading day.
+ 
+**The movers mart filters split artifacts.** Polygon back-adjusts historical prices for splits, so an older row can predate the adjustment and create a fake overnight 2x or 0.5x "move." `market_movers` uses a `LAG` window for day-over-day change and excludes any move of 50% or more.
+ 
+**Realized P&L uses weighted average cost; lot deduction uses FIFO.** The `realized_pnl` mart computes cost basis per ticker and account across all buy lots. When a sale is recorded, FIFO decides which lot rows are reduced or removed. Keeping the two concerns separate keeps the accounting transparent.
+ 
+**The dashboard talks to Supabase directly.** An earlier design routed everything through FastAPI. Calling Supabase, Polygon, and FRED directly lets the dashboard deploy standalone on Streamlit Cloud with no extra server. The API layer still exists but nothing depends on it.
+ 
+**The AI analyst is a tool-use loop.** `analyze()` lets Claude call tools for positions, movers, news, and macro data, feeds the results back, and repeats until Claude finishes. The caller owns the message history, so the same function powers both the CLI and the dashboard chat.
+ 
+---
+ 
+## Data model
+ 
+**Source tables (Supabase):** `stocks`, `price_history`, `fundamentals`, `portfolio` (one row per buy lot), `sales` (one row per sell).
+ 
+**dbt marts:** `portfolio_positions`, `portfolio_summary`, `portfolio_sector_exposure`, `portfolio_vs_spy`, `market_movers`, `realized_pnl`.
+ 
+---
+ 
+## Project structure
+ 
+| Folder | Purpose |
+|--------|---------|
+| `ingestion/` | Daily price fetcher and historical backfill |
 | `dbt/` | Staging models and portfolio marts |
-| `dashboard/` | Streamlit portfolio dashboard (calls Supabase/Polygon/FRED directly) |
+| `dashboard/` | Streamlit app |
 | `analysis/` | Claude API portfolio analyzer |
-| `api/` | FastAPI service (exists, not wired to the dashboard) |
+| `api/` | Optional FastAPI service |
 | `schema/` | Database schema |
-| `.github/workflows/` | Automated daily pipeline (price fetch + dbt run) |
-
+| `scripts/` | Seed data and dataset-building notebooks |
+| `.github/workflows/` | Daily pipeline and post-trade mart refresh |
+ 
 ---
-
-## Database Schema
-
-Source tables in Supabase: `stocks`, `price_history`, `fundamentals`, `portfolio`
-(buy lots), `sales` (sell transactions).
-
-dbt marts: `portfolio_positions`, `portfolio_summary`, `portfolio_sector_exposure`,
-`portfolio_vs_spy`, `market_movers`, `realized_pnl`.
-
+ 
+## Run it yourself
+ 
+1. Create a Supabase project and apply the schema in `schema/`.
+2. Copy your keys into a `.env` file: `SUPABASE_URL`, `SUPABASE_KEY`, `POLYGON_API_KEY`, `ANTHROPIC_API_KEY`, `FRED_API_KEY`.
+3. Install and run:
+```bash
+pip install -r requirements.txt
+python -m ingestion.price_fetcher          # load prices
+dbt run --project-dir dbt/                 # build marts (needs a finance_platform profile)
+streamlit run dashboard/app.py             # launch the dashboard
+python -m analysis.portfolio_analyzer      # or ask questions from the terminal
+```
+ 
 ---
-
+ 
 ## Status
-
-Active build. Phases 1–9 complete: ingestion, dbt layer, dashboard (with Market
-Movers, News, and Economic Indicators tabs), Claude API analyzer with multi-turn
-history, and Add/Sell Position forms with realized P&L tracking.
-
-Next up: Realized P&L KPI card and total return (unrealized + realized) in the Portfolio Summary tab.
+ 
+Phases 1 to 9 are complete: ingestion, dbt layer, dashboard with Market Movers, News, and Economic Indicators tabs, the Claude analyzer with multi-turn history, Add/Sell Position forms, and the realized P&L mart.
+ 
+**Next:** expand dbt tests (reconciliation checks such as positions summing to the portfolio total, and no negative share counts) and add CI that runs `dbt test` on every pull request.
